@@ -37,15 +37,18 @@ inline bool IsAligned(size_t alignment, const void* ptr) {
 }  // namespace
 
 std::string GetWindowsErrSz(DWORD err) {
-  LPSTR lpMsgBuf;
+  std::string Err;
+  LPSTR lpMsgBuf = nullptr;
   FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                      FORMAT_MESSAGE_IGNORE_INSERTS,
                  NULL, err,
                  0,  // Default language
                  reinterpret_cast<LPSTR>(&lpMsgBuf), 0, NULL);
 
-  std::string Err = lpMsgBuf;
-  LocalFree(lpMsgBuf);
+  if (lpMsgBuf) {
+    Err = lpMsgBuf;
+    LocalFree(lpMsgBuf);
+  }
   return Err;
 }
 
@@ -227,7 +230,7 @@ IOStatus WinMmapReadableFile::Read(uint64_t offset, size_t n,
   } else if (offset + n > length_) {
     n = length_ - static_cast<size_t>(offset);
   }
-  *result = Slice(reinterpret_cast<const char*>(mapped_region_) + offset, n);
+  *result = Slice(static_cast<const char*>(mapped_region_) + offset, n);
   return s;
 }
 
@@ -324,9 +327,9 @@ IOStatus WinMmapFile::MapNewRegion(const IOOptions& options,
   offset.QuadPart = file_offset_;
 
   // View must begin at the granularity aligned offset
-  mapped_begin_ = reinterpret_cast<char*>(
-      MapViewOfFileEx(hMap_, FILE_MAP_WRITE, offset.HighPart, offset.LowPart,
-                      view_size_, NULL));
+  mapped_begin_ =
+      static_cast<char*>(MapViewOfFileEx(hMap_, FILE_MAP_WRITE, offset.HighPart,
+                                         offset.LowPart, view_size_, NULL));
 
   if (!mapped_begin_) {
     status = IOErrorFromWindowsError(
@@ -1062,6 +1065,22 @@ WinMemoryMappedBuffer::~WinMemoryMappedBuffer() {
 IOStatus WinDirectory::Fsync(const IOOptions& /*options*/,
                              IODebugContext* /*dbg*/) {
   return IOStatus::OK();
+}
+
+IOStatus WinDirectory::Close(const IOOptions& /*options*/,
+                             IODebugContext* /*dbg*/) {
+  IOStatus s = IOStatus::OK();
+  BOOL ret __attribute__((__unused__));
+  if (handle_ != INVALID_HANDLE_VALUE) {
+    ret = ::CloseHandle(handle_);
+    if (!ret) {
+      auto lastError = GetLastError();
+      s = IOErrorFromWindowsError("Directory closes failed for : " + GetName(),
+                                  lastError);
+    }
+    handle_ = NULL;
+  }
+  return s;
 }
 
 size_t WinDirectory::GetUniqueId(char* id, size_t max_size) const {

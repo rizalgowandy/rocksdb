@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "rocksdb/advanced_options.h"
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
 #include "rocksdb/table.h"
@@ -24,11 +25,11 @@ struct MutableDBOptions;
 struct MutableCFOptions;
 struct Options;
 
-std::vector<CompressionType> GetSupportedCompressions();
+const std::vector<CompressionType>& GetSupportedCompressions();
 
-std::vector<CompressionType> GetSupportedDictCompressions();
+const std::vector<CompressionType>& GetSupportedDictCompressions();
 
-std::vector<ChecksumType> GetSupportedChecksums();
+const std::vector<ChecksumType>& GetSupportedChecksums();
 
 inline bool IsSupportedChecksumType(ChecksumType type) {
   // Avoid annoying compiler warning-as-error (-Werror=type-limits)
@@ -43,6 +44,10 @@ Status ValidateOptions(const DBOptions& db_opts,
 
 DBOptions BuildDBOptions(const ImmutableDBOptions& immutable_db_options,
                          const MutableDBOptions& mutable_db_options);
+// Overwrites `options`
+void BuildDBOptions(const ImmutableDBOptions& immutable_db_options,
+                    const MutableDBOptions& mutable_db_options,
+                    DBOptions& options);
 
 ColumnFamilyOptions BuildColumnFamilyOptions(
     const ColumnFamilyOptions& ioptions,
@@ -53,7 +58,6 @@ void UpdateColumnFamilyOptions(const ImmutableCFOptions& ioptions,
 void UpdateColumnFamilyOptions(const MutableCFOptions& moptions,
                                ColumnFamilyOptions* cf_opts);
 
-#ifndef ROCKSDB_LITE
 std::unique_ptr<Configurable> DBOptionsAsConfigurable(
     const MutableDBOptions& opts);
 std::unique_ptr<Configurable> DBOptionsAsConfigurable(
@@ -65,10 +69,8 @@ std::unique_ptr<Configurable> CFOptionsAsConfigurable(
     const ColumnFamilyOptions& opts,
     const std::unordered_map<std::string, std::string>* opt_map = nullptr);
 
-extern Status StringToMap(
-    const std::string& opts_str,
-    std::unordered_map<std::string, std::string>* opts_map);
-#endif  // !ROCKSDB_LITE
+Status StringToMap(const std::string& opts_str,
+                   std::unordered_map<std::string, std::string>* opts_map);
 
 struct OptionsHelper {
   static const std::string kCFOptionsName /*= "ColumnFamilyOptions"*/;
@@ -77,10 +79,12 @@ struct OptionsHelper {
   static std::map<CompactionPri, std::string> compaction_pri_to_string;
   static std::map<CompactionStopStyle, std::string>
       compaction_stop_style_to_string;
+  static std::map<Temperature, std::string> temperature_to_string;
   static std::unordered_map<std::string, ChecksumType> checksum_type_string_map;
   static std::unordered_map<std::string, CompressionType>
       compression_type_string_map;
-#ifndef ROCKSDB_LITE
+  static std::unordered_map<std::string, PrepopulateBlobCache>
+      prepopulate_blob_cache_string_map;
   static std::unordered_map<std::string, CompactionStopStyle>
       compaction_stop_style_string_map;
   static std::unordered_map<std::string, EncodingType> encoding_type_string_map;
@@ -89,7 +93,6 @@ struct OptionsHelper {
   static std::unordered_map<std::string, CompactionPri>
       compaction_pri_string_map;
   static std::unordered_map<std::string, Temperature> temperature_string_map;
-#endif  // !ROCKSDB_LITE
 };
 
 // Some aliasing
@@ -98,8 +101,8 @@ static auto& compaction_style_to_string =
 static auto& compaction_pri_to_string = OptionsHelper::compaction_pri_to_string;
 static auto& compaction_stop_style_to_string =
     OptionsHelper::compaction_stop_style_to_string;
+static auto& temperature_to_string = OptionsHelper::temperature_to_string;
 static auto& checksum_type_string_map = OptionsHelper::checksum_type_string_map;
-#ifndef ROCKSDB_LITE
 static auto& compaction_stop_style_string_map =
     OptionsHelper::compaction_stop_style_string_map;
 static auto& compression_type_string_map =
@@ -110,6 +113,7 @@ static auto& compaction_style_string_map =
 static auto& compaction_pri_string_map =
     OptionsHelper::compaction_pri_string_map;
 static auto& temperature_string_map = OptionsHelper::temperature_string_map;
-#endif  // !ROCKSDB_LITE
+static auto& prepopulate_blob_cache_string_map =
+    OptionsHelper::prepopulate_blob_cache_string_map;
 
 }  // namespace ROCKSDB_NAMESPACE

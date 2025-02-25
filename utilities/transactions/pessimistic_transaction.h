@@ -5,8 +5,6 @@
 
 #pragma once
 
-#ifndef ROCKSDB_LITE
-
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -116,18 +114,14 @@ class PessimisticTransaction : public TransactionBaseImpl {
 
   int64_t GetDeadlockDetectDepth() const { return deadlock_detect_depth_; }
 
-  virtual Status GetRangeLock(ColumnFamilyHandle* column_family,
-                              const Endpoint& start_key,
-                              const Endpoint& end_key) override;
+  Status GetRangeLock(ColumnFamilyHandle* column_family,
+                      const Endpoint& start_key,
+                      const Endpoint& end_key) override;
+
+  Status CollapseKey(const ReadOptions& options, const Slice& key,
+                     ColumnFamilyHandle* column_family = nullptr) override;
 
  protected:
-  // Refer to
-  // TransactionOptions::use_only_the_last_commit_time_batch_for_recovery
-  bool use_only_the_last_commit_time_batch_for_recovery_ = false;
-  // Refer to
-  // TransactionOptions::skip_prepare
-  bool skip_prepare_ = false;
-
   virtual Status PrepareInternal() = 0;
 
   virtual Status CommitWithoutPrepareInternal() = 0;
@@ -165,6 +159,17 @@ class PessimisticTransaction : public TransactionBaseImpl {
   // performed blind writes or Get, though.
   TxnTimestamp read_timestamp_{kMaxTxnTimestamp};
   TxnTimestamp commit_timestamp_{kMaxTxnTimestamp};
+
+  // Refer to
+  // TransactionOptions::use_only_the_last_commit_time_batch_for_recovery
+  bool use_only_the_last_commit_time_batch_for_recovery_ = false;
+  // Refer to
+  // TransactionOptions::skip_prepare
+  bool skip_prepare_ = false;
+  // Refer to
+  // TransactionOptions::commit_bypass_memtable
+  uint32_t commit_bypass_memtable_threshold_ =
+      std::numeric_limits<uint32_t>::max();
 
  private:
   friend class TransactionTest_ValidateSnapshotTest_Test;
@@ -223,10 +228,102 @@ class WriteCommittedTxn : public PessimisticTransaction {
 
   ~WriteCommittedTxn() override {}
 
+  using TransactionBaseImpl::GetForUpdate;
+  Status GetForUpdate(const ReadOptions& read_options,
+                      ColumnFamilyHandle* column_family, const Slice& key,
+                      std::string* value, bool exclusive,
+                      const bool do_validate) override;
+  Status GetForUpdate(const ReadOptions& read_options,
+                      ColumnFamilyHandle* column_family, const Slice& key,
+                      PinnableSlice* pinnable_val, bool exclusive,
+                      const bool do_validate) override;
+
+  Status GetEntityForUpdate(const ReadOptions& read_options,
+                            ColumnFamilyHandle* column_family, const Slice& key,
+                            PinnableWideColumns* columns, bool exclusive,
+                            bool do_validate) override;
+
+  using TransactionBaseImpl::Put;
+  // `key` does NOT include timestamp even when it's enabled.
+  Status Put(ColumnFamilyHandle* column_family, const Slice& key,
+             const Slice& value, const bool assume_tracked = false) override;
+  Status Put(ColumnFamilyHandle* column_family, const SliceParts& key,
+             const SliceParts& value,
+             const bool assume_tracked = false) override;
+
+  using TransactionBaseImpl::PutUntracked;
+  Status PutUntracked(ColumnFamilyHandle* column_family, const Slice& key,
+                      const Slice& value) override;
+  Status PutUntracked(ColumnFamilyHandle* column_family, const SliceParts& key,
+                      const SliceParts& value) override;
+
+  // `key` does NOT include timestamp even when it's enabled.
+  Status PutEntity(ColumnFamilyHandle* column_family, const Slice& key,
+                   const WideColumns& columns,
+                   bool assume_tracked = false) override {
+    const bool do_validate = !assume_tracked;
+
+    return PutEntityImpl(column_family, key, columns, do_validate,
+                         assume_tracked);
+  }
+
+  Status PutEntityUntracked(ColumnFamilyHandle* column_family, const Slice& key,
+                            const WideColumns& columns) override {
+    constexpr bool do_validate = false;
+    constexpr bool assume_tracked = false;
+
+    return PutEntityImpl(column_family, key, columns, do_validate,
+                         assume_tracked);
+  }
+
+  using TransactionBaseImpl::Delete;
+  // `key` does NOT include timestamp even when it's enabled.
+  Status Delete(ColumnFamilyHandle* column_family, const Slice& key,
+                const bool assume_tracked = false) override;
+  Status Delete(ColumnFamilyHandle* column_family, const SliceParts& key,
+                const bool assume_tracked = false) override;
+
+  using TransactionBaseImpl::DeleteUntracked;
+  Status DeleteUntracked(ColumnFamilyHandle* column_family,
+                         const Slice& key) override;
+  Status DeleteUntracked(ColumnFamilyHandle* column_family,
+                         const SliceParts& key) override;
+
+  using TransactionBaseImpl::SingleDelete;
+  // `key` does NOT include timestamp even when it's enabled.
+  Status SingleDelete(ColumnFamilyHandle* column_family, const Slice& key,
+                      const bool assume_tracked = false) override;
+  Status SingleDelete(ColumnFamilyHandle* column_family, const SliceParts& key,
+                      const bool assume_tracked = false) override;
+
+  using TransactionBaseImpl::SingleDeleteUntracked;
+  Status SingleDeleteUntracked(ColumnFamilyHandle* column_family,
+                               const Slice& key) override;
+
+  using TransactionBaseImpl::Merge;
+  Status Merge(ColumnFamilyHandle* column_family, const Slice& key,
+               const Slice& value, const bool assume_tracked = false) override;
+
   Status SetReadTimestampForValidation(TxnTimestamp ts) override;
   Status SetCommitTimestamp(TxnTimestamp ts) override;
+  TxnTimestamp GetCommitTimestamp() const override { return commit_timestamp_; }
 
  private:
+  template <typename TValue>
+  Status GetForUpdateImpl(const ReadOptions& read_options,
+                          ColumnFamilyHandle* column_family, const Slice& key,
+                          TValue* value, bool exclusive,
+                          const bool do_validate);
+
+  Status PutEntityImpl(ColumnFamilyHandle* column_family, const Slice& key,
+                       const WideColumns& columns, bool do_validate,
+                       bool assume_tracked);
+
+  template <typename TKey, typename TOperation>
+  Status Operate(ColumnFamilyHandle* column_family, const TKey& key,
+                 const bool do_validate, const bool assume_tracked,
+                 TOperation&& operation);
+
   Status PrepareInternal() override;
 
   Status CommitWithoutPrepareInternal() override;
@@ -236,8 +333,17 @@ class WriteCommittedTxn : public PessimisticTransaction {
   Status CommitInternal() override;
 
   Status RollbackInternal() override;
+
+  // Checks if the combination of `do_validate`, the read timestamp set in
+  // `read_timestamp_` and the `enable_udt_validation` flag in
+  // TransactionDBOptions make sense together.
+  Status SanityCheckReadTimestamp(bool do_validate);
+
+  // Column families that enable timestamps and whose data are written when
+  // indexing_enabled_ is false. If a key is written when indexing_enabled_ is
+  // true, then the corresponding column family is not added to cfs_with_ts
+  // even if it enables timestamp.
+  std::unordered_set<uint32_t> cfs_with_ts_tracked_when_indexing_disabled_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-
-#endif  // ROCKSDB_LITE

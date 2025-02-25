@@ -1,3 +1,9 @@
+//  Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
+
 #include "rocksdb/concurrent_task_limiter.h"
 
 #include <jni.h>
@@ -82,9 +88,8 @@ jint Java_org_rocksdb_ConcurrentTaskLimiterImpl_outstandingTask(JNIEnv*, jclass,
  * Method:    disposeInternal
  * Signature: (J)V
  */
-void Java_org_rocksdb_ConcurrentTaskLimiterImpl_disposeInternal(JNIEnv*,
-                                                                jobject,
-                                                                jlong jhandle) {
+void Java_org_rocksdb_ConcurrentTaskLimiterImpl_disposeInternalJni(
+    JNIEnv*, jclass, jlong jhandle) {
   auto* ptr = reinterpret_cast<
       std::shared_ptr<ROCKSDB_NAMESPACE::ConcurrentTaskLimiter>*>(jhandle);
   delete ptr;  // delete std::shared_ptr

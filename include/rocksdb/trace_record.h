@@ -30,6 +30,7 @@ enum TraceType : char {
   kTraceIteratorSeekForPrev = 6,
   // Block cache tracing related trace types.
   kBlockTraceIndexBlock = 7,
+  // TODO: split out kinds of filter blocks?
   kBlockTraceFilterBlock = 8,
   kBlockTraceDataBlock = 9,
   kBlockTraceUncompressionDictBlock = 10,
@@ -103,7 +104,7 @@ class WriteQueryTraceRecord : public QueryTraceRecord {
 
   WriteQueryTraceRecord(const std::string& write_batch_rep, uint64_t timestamp);
 
-  virtual ~WriteQueryTraceRecord() override;
+  ~WriteQueryTraceRecord() override;
 
   TraceType GetTraceType() const override { return kTraceWrite; }
 
@@ -126,7 +127,7 @@ class GetQueryTraceRecord : public QueryTraceRecord {
   GetQueryTraceRecord(uint32_t column_family_id, const std::string& key,
                       uint64_t timestamp);
 
-  virtual ~GetQueryTraceRecord() override;
+  ~GetQueryTraceRecord() override;
 
   TraceType GetTraceType() const override { return kTraceGet; }
 
@@ -155,7 +156,7 @@ class IteratorQueryTraceRecord : public QueryTraceRecord {
   IteratorQueryTraceRecord(const std::string& lower_bound,
                            const std::string& upper_bound, uint64_t timestamp);
 
-  virtual ~IteratorQueryTraceRecord() override;
+  ~IteratorQueryTraceRecord() override;
 
   // Get the iterator's lower/upper bound. They may be used in ReadOptions to
   // create an Iterator instance.
@@ -192,7 +193,7 @@ class IteratorSeekQueryTraceRecord : public IteratorQueryTraceRecord {
                                const std::string& upper_bound,
                                uint64_t timestamp);
 
-  virtual ~IteratorSeekQueryTraceRecord() override;
+  ~IteratorSeekQueryTraceRecord() override;
 
   // Trace type matches the seek type.
   TraceType GetTraceType() const override;
@@ -226,7 +227,7 @@ class MultiGetQueryTraceRecord : public QueryTraceRecord {
                            const std::vector<std::string>& keys,
                            uint64_t timestamp);
 
-  virtual ~MultiGetQueryTraceRecord() override;
+  ~MultiGetQueryTraceRecord() override;
 
   TraceType GetTraceType() const override { return kTraceMultiGet; }
 

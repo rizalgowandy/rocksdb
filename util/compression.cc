@@ -41,11 +41,14 @@ StreamingUncompress* StreamingUncompress::Create(
 }
 
 int ZSTDStreamingCompress::Compress(const char* input, size_t input_size,
-                                    char* output, size_t* output_size) {
-  assert(input != nullptr && output != nullptr && input_size > 0 &&
-         output_size != nullptr);
-  *output_size = 0;
-#ifndef ZSTD_STREAMING
+                                    char* output, size_t* output_pos) {
+  assert(input != nullptr && output != nullptr && output_pos != nullptr);
+  *output_pos = 0;
+  // Don't need to compress an empty input
+  if (input_size == 0) {
+    return 0;
+  }
+#ifndef ZSTD
   (void)input;
   (void)input_size;
   (void)output;
@@ -61,32 +64,35 @@ int ZSTDStreamingCompress::Compress(const char* input, size_t input_size,
   }
   ZSTD_outBuffer output_buffer = {output, max_output_len_, /*pos=*/0};
   const size_t remaining =
-      ZSTD_compressStream2(cctx_, &output_buffer, &input_buffer_, ZSTD_e_flush);
+      ZSTD_compressStream2(cctx_, &output_buffer, &input_buffer_, ZSTD_e_end);
   if (ZSTD_isError(remaining)) {
     // Failure
     Reset();
     return -1;
   }
   // Success
-  *output_size = output_buffer.pos;
-  return (int)(input_buffer_.size - input_buffer_.pos);
+  *output_pos = output_buffer.pos;
+  return (int)remaining;
 #endif
 }
 
 void ZSTDStreamingCompress::Reset() {
-#ifdef ZSTD_STREAMING
+#ifdef ZSTD
   ZSTD_CCtx_reset(cctx_, ZSTD_ResetDirective::ZSTD_reset_session_only);
   input_buffer_ = {/*src=*/nullptr, /*size=*/0, /*pos=*/0};
 #endif
 }
 
 int ZSTDStreamingUncompress::Uncompress(const char* input, size_t input_size,
-                                        char* output, size_t* output_size) {
-  assert(input != nullptr && output != nullptr && input_size > 0 &&
-         output_size != nullptr);
-  *output_size = 0;
-#ifdef ZSTD_STREAMING
-  if (input_buffer_.src != input) {
+                                        char* output, size_t* output_pos) {
+  assert(output != nullptr && output_pos != nullptr);
+  *output_pos = 0;
+  // Don't need to uncompress an empty input
+  if (input_size == 0) {
+    return 0;
+  }
+#ifdef ZSTD
+  if (input) {
     // New input
     input_buffer_ = {input, input_size, /*pos=*/0};
   }
@@ -96,7 +102,7 @@ int ZSTDStreamingUncompress::Uncompress(const char* input, size_t input_size,
     Reset();
     return -1;
   }
-  *output_size = output_buffer.pos;
+  *output_pos = output_buffer.pos;
   return (int)(input_buffer_.size - input_buffer_.pos);
 #else
   (void)input;
@@ -107,7 +113,7 @@ int ZSTDStreamingUncompress::Uncompress(const char* input, size_t input_size,
 }
 
 void ZSTDStreamingUncompress::Reset() {
-#ifdef ZSTD_STREAMING
+#ifdef ZSTD
   ZSTD_DCtx_reset(dctx_, ZSTD_ResetDirective::ZSTD_reset_session_only);
   input_buffer_ = {/*src=*/nullptr, /*size=*/0, /*pos=*/0};
 #endif

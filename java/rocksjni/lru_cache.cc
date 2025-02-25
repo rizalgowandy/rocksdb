@@ -22,12 +22,16 @@ jlong Java_org_rocksdb_LRUCache_newLRUCache(JNIEnv* /*env*/, jclass /*jcls*/,
                                             jlong jcapacity,
                                             jint jnum_shard_bits,
                                             jboolean jstrict_capacity_limit,
-                                            jdouble jhigh_pri_pool_ratio) {
+                                            jdouble jhigh_pri_pool_ratio,
+                                            jdouble jlow_pri_pool_ratio) {
   auto* sptr_lru_cache = new std::shared_ptr<ROCKSDB_NAMESPACE::Cache>(
       ROCKSDB_NAMESPACE::NewLRUCache(
           static_cast<size_t>(jcapacity), static_cast<int>(jnum_shard_bits),
           static_cast<bool>(jstrict_capacity_limit),
-          static_cast<double>(jhigh_pri_pool_ratio)));
+          static_cast<double>(jhigh_pri_pool_ratio),
+          nullptr /* memory_allocator */, rocksdb::kDefaultToAdaptiveMutex,
+          rocksdb::kDefaultCacheMetadataChargePolicy,
+          static_cast<double>(jlow_pri_pool_ratio)));
   return GET_CPLUSPLUS_POINTER(sptr_lru_cache);
 }
 
@@ -36,9 +40,9 @@ jlong Java_org_rocksdb_LRUCache_newLRUCache(JNIEnv* /*env*/, jclass /*jcls*/,
  * Method:    disposeInternal
  * Signature: (J)V
  */
-void Java_org_rocksdb_LRUCache_disposeInternal(JNIEnv* /*env*/,
-                                               jobject /*jobj*/,
-                                               jlong jhandle) {
+void Java_org_rocksdb_LRUCache_disposeInternalJni(JNIEnv* /*env*/,
+                                                  jclass /*jcls*/,
+                                                  jlong jhandle) {
   auto* sptr_lru_cache =
       reinterpret_cast<std::shared_ptr<ROCKSDB_NAMESPACE::Cache>*>(jhandle);
   delete sptr_lru_cache;  // delete std::shared_ptr

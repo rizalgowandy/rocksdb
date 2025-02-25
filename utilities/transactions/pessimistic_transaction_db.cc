@@ -3,11 +3,10 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-#ifndef ROCKSDB_LITE
-
 #include "utilities/transactions/pessimistic_transaction_db.h"
 
 #include <cinttypes>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -21,6 +20,7 @@
 #include "test_util/sync_point.h"
 #include "util/cast_util.h"
 #include "util/mutexlock.h"
+#include "utilities/secondary_index/secondary_index_mixin.h"
 #include "utilities/transactions/pessimistic_transaction.h"
 #include "utilities/transactions/transaction_db_mutex_impl.h"
 #include "utilities/transactions/write_prepared_txn_db.h"
@@ -86,8 +86,10 @@ Status PessimisticTransactionDB::VerifyCFOptions(
         << " timestamp size is " << ts_sz << " bytes";
     return Status::InvalidArgument(oss.str());
   }
-  // TODO: Update this check once timestamp is supported.
-  return Status::NotSupported("Transaction DB does not support timestamp");
+  if (txn_db_options_.write_policy != WRITE_COMMITTED) {
+    return Status::NotSupported("Only WriteCommittedTxn supports timestamp");
+  }
+  return Status::OK();
 }
 
 Status PessimisticTransactionDB::Initialize(
@@ -133,6 +135,7 @@ Status PessimisticTransactionDB::Initialize(
     assert(batch_info.log_number_);
     assert(recovered_trx->name_.length());
 
+    // TODO: plumb Env::IOActivity, Env::IOPriority
     WriteOptions w_options;
     w_options.sync = true;
     TransactionOptions t_options;
@@ -181,7 +184,12 @@ Transaction* WriteCommittedTxnDB::BeginTransaction(
     ReinitializeTransaction(old_txn, write_options, txn_options);
     return old_txn;
   } else {
-    return new WriteCommittedTxn(this, write_options, txn_options);
+    if (!txn_db_options_.secondary_indices.empty()) {
+      return new SecondaryIndexMixin<WriteCommittedTxn>(
+          &txn_db_options_.secondary_indices, this, write_options, txn_options);
+    } else {
+      return new WriteCommittedTxn(this, write_options, txn_options);
+    }
   }
 }
 
@@ -202,8 +210,7 @@ Status TransactionDB::Open(const Options& options,
   DBOptions db_options(options);
   ColumnFamilyOptions cf_options(options);
   std::vector<ColumnFamilyDescriptor> column_families;
-  column_families.push_back(
-      ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_options));
+  column_families.emplace_back(kDefaultColumnFamilyName, cf_options);
   std::vector<ColumnFamilyHandle*> handles;
   Status s = TransactionDB::Open(db_options, txn_db_options, dbname,
                                  column_families, &handles, dbptr);
@@ -223,7 +230,7 @@ Status TransactionDB::Open(
     const std::vector<ColumnFamilyDescriptor>& column_families,
     std::vector<ColumnFamilyHandle*>* handles, TransactionDB** dbptr) {
   Status s;
-  DB* db = nullptr;
+  std::unique_ptr<DB> db;
   if (txn_db_options.write_policy == WRITE_COMMITTED &&
       db_options.unordered_write) {
     return Status::NotSupported(
@@ -254,15 +261,16 @@ Status TransactionDB::Open(
       txn_db_options.write_policy == WRITE_COMMITTED ||
       txn_db_options.write_policy == WRITE_PREPARED;
   s = DBImpl::Open(db_options_2pc, dbname, column_families_copy, handles, &db,
-                   use_seq_per_batch, use_batch_per_txn);
+                   use_seq_per_batch, use_batch_per_txn,
+                   /*is_retry=*/false, /*can_retry=*/nullptr);
   if (s.ok()) {
     ROCKS_LOG_WARN(db->GetDBOptions().info_log,
                    "Transaction write_policy is %" PRId32,
                    static_cast<int>(txn_db_options.write_policy));
     // if WrapDB return non-ok, db will be deleted in WrapDB() via
     // ~StackableDB().
-    s = WrapDB(db, txn_db_options, compaction_enabled_cf_indices, *handles,
-               dbptr);
+    s = WrapDB(db.release(), txn_db_options, compaction_enabled_cf_indices,
+               *handles, dbptr);
   }
   return s;
 }
@@ -380,6 +388,72 @@ Status PessimisticTransactionDB::CreateColumnFamily(
   return s;
 }
 
+Status PessimisticTransactionDB::CreateColumnFamilies(
+    const ColumnFamilyOptions& options,
+    const std::vector<std::string>& column_family_names,
+    std::vector<ColumnFamilyHandle*>* handles) {
+  InstrumentedMutexLock l(&column_family_mutex_);
+
+  Status s = VerifyCFOptions(options);
+  if (!s.ok()) {
+    return s;
+  }
+
+  s = db_->CreateColumnFamilies(options, column_family_names, handles);
+  if (s.ok()) {
+    for (auto* handle : *handles) {
+      lock_manager_->AddColumnFamily(handle);
+      UpdateCFComparatorMap(handle);
+    }
+  }
+
+  return s;
+}
+
+Status PessimisticTransactionDB::CreateColumnFamilies(
+    const std::vector<ColumnFamilyDescriptor>& column_families,
+    std::vector<ColumnFamilyHandle*>* handles) {
+  InstrumentedMutexLock l(&column_family_mutex_);
+
+  for (auto& cf_desc : column_families) {
+    Status s = VerifyCFOptions(cf_desc.options);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  Status s = db_->CreateColumnFamilies(column_families, handles);
+  if (s.ok()) {
+    for (auto* handle : *handles) {
+      lock_manager_->AddColumnFamily(handle);
+      UpdateCFComparatorMap(handle);
+    }
+  }
+
+  return s;
+}
+
+Status PessimisticTransactionDB::CreateColumnFamilyWithImport(
+    const ColumnFamilyOptions& options, const std::string& column_family_name,
+    const ImportColumnFamilyOptions& import_options,
+    const std::vector<const ExportImportFilesMetaData*>& metadatas,
+    ColumnFamilyHandle** handle) {
+  InstrumentedMutexLock l(&column_family_mutex_);
+  Status s = VerifyCFOptions(options);
+  if (!s.ok()) {
+    return s;
+  }
+
+  s = db_->CreateColumnFamilyWithImport(options, column_family_name,
+                                        import_options, metadatas, handle);
+  if (s.ok()) {
+    lock_manager_->AddColumnFamily(*handle);
+    UpdateCFComparatorMap(*handle);
+  }
+
+  return s;
+}
+
 // Let LockManager know that it can deallocate the LockMap for this
 // column family.
 Status PessimisticTransactionDB::DropColumnFamily(
@@ -389,6 +463,20 @@ Status PessimisticTransactionDB::DropColumnFamily(
   Status s = db_->DropColumnFamily(column_family);
   if (s.ok()) {
     lock_manager_->RemoveColumnFamily(column_family);
+  }
+
+  return s;
+}
+
+Status PessimisticTransactionDB::DropColumnFamilies(
+    const std::vector<ColumnFamilyHandle*>& column_families) {
+  InstrumentedMutexLock l(&column_family_mutex_);
+
+  Status s = db_->DropColumnFamilies(column_families);
+  if (s.ok()) {
+    for (auto* handle : column_families) {
+      lock_manager_->RemoveColumnFamily(handle);
+    }
   }
 
   return s;
@@ -430,19 +518,22 @@ Transaction* PessimisticTransactionDB::BeginInternalTransaction(
   return txn;
 }
 
-// All user Put, Merge, Delete, and Write requests must be intercepted to make
-// sure that they lock all keys that they are writing to avoid causing conflicts
-// with any concurrent transactions. The easiest way to do this is to wrap all
-// write operations in a transaction.
+// All user Put, PutEntity, Merge, Delete, and Write requests must be
+// intercepted to make sure that they lock all keys that they are writing to
+// avoid causing conflicts with any concurrent transactions. The easiest way to
+// do this is to wrap all write operations in a transaction.
 //
-// Put(), Merge(), and Delete() only lock a single key per call.  Write() will
-// sort its keys before locking them.  This guarantees that TransactionDB write
-// methods cannot deadlock with each other (but still could deadlock with a
-// Transaction).
+// Put(), PutEntity(), Merge(), and Delete() only lock a single key per call.
+// Write() will sort its keys before locking them.  This guarantees that
+// TransactionDB write methods cannot deadlock with each other (but still could
+// deadlock with a Transaction).
 Status PessimisticTransactionDB::Put(const WriteOptions& options,
                                      ColumnFamilyHandle* column_family,
                                      const Slice& key, const Slice& val) {
-  Status s;
+  Status s = FailIfCfEnablesTs(this, column_family);
+  if (!s.ok()) {
+    return s;
+  }
 
   Transaction* txn = BeginInternalTransaction(options);
   txn->DisableIndexing();
@@ -460,10 +551,49 @@ Status PessimisticTransactionDB::Put(const WriteOptions& options,
   return s;
 }
 
+Status PessimisticTransactionDB::PutEntity(const WriteOptions& options,
+                                           ColumnFamilyHandle* column_family,
+                                           const Slice& key,
+                                           const WideColumns& columns) {
+  {
+    const Status s = FailIfCfEnablesTs(this, column_family);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  {
+    std::unique_ptr<Transaction> txn(BeginInternalTransaction(options));
+    txn->DisableIndexing();
+
+    // Since the client didn't create a transaction, they don't care about
+    // conflict checking for this write.  So we just need to do
+    // PutEntityUntracked().
+    {
+      const Status s = txn->PutEntityUntracked(column_family, key, columns);
+      if (!s.ok()) {
+        return s;
+      }
+    }
+
+    {
+      const Status s = txn->Commit();
+      if (!s.ok()) {
+        return s;
+      }
+    }
+  }
+
+  return Status::OK();
+}
+
 Status PessimisticTransactionDB::Delete(const WriteOptions& wopts,
                                         ColumnFamilyHandle* column_family,
                                         const Slice& key) {
-  Status s;
+  Status s = FailIfCfEnablesTs(this, column_family);
+  if (!s.ok()) {
+    return s;
+  }
 
   Transaction* txn = BeginInternalTransaction(wopts);
   txn->DisableIndexing();
@@ -485,7 +615,10 @@ Status PessimisticTransactionDB::Delete(const WriteOptions& wopts,
 Status PessimisticTransactionDB::SingleDelete(const WriteOptions& wopts,
                                               ColumnFamilyHandle* column_family,
                                               const Slice& key) {
-  Status s;
+  Status s = FailIfCfEnablesTs(this, column_family);
+  if (!s.ok()) {
+    return s;
+  }
 
   Transaction* txn = BeginInternalTransaction(wopts);
   txn->DisableIndexing();
@@ -507,7 +640,10 @@ Status PessimisticTransactionDB::SingleDelete(const WriteOptions& wopts,
 Status PessimisticTransactionDB::Merge(const WriteOptions& options,
                                        ColumnFamilyHandle* column_family,
                                        const Slice& key, const Slice& value) {
-  Status s;
+  Status s = FailIfCfEnablesTs(this, column_family);
+  if (!s.ok()) {
+    return s;
+  }
 
   Transaction* txn = BeginInternalTransaction(options);
   txn->DisableIndexing();
@@ -533,6 +669,10 @@ Status PessimisticTransactionDB::Write(const WriteOptions& opts,
 
 Status WriteCommittedTxnDB::Write(const WriteOptions& opts,
                                   WriteBatch* updates) {
+  Status s = FailIfBatchHasTs(updates);
+  if (!s.ok()) {
+    return s;
+  }
   if (txn_db_options_.skip_concurrency_control) {
     return db_impl_->Write(opts, updates);
   } else {
@@ -543,6 +683,10 @@ Status WriteCommittedTxnDB::Write(const WriteOptions& opts,
 Status WriteCommittedTxnDB::Write(
     const WriteOptions& opts,
     const TransactionDBWriteOptimizations& optimizations, WriteBatch* updates) {
+  Status s = FailIfBatchHasTs(updates);
+  if (!s.ok()) {
+    return s;
+  }
   if (optimizations.skip_concurrency_control) {
     return db_impl_->Write(opts, updates);
   } else {
@@ -585,6 +729,11 @@ void PessimisticTransactionDB::ReinitializeTransaction(
 Transaction* PessimisticTransactionDB::GetTransactionByName(
     const TransactionName& name) {
   std::lock_guard<std::mutex> lock(name_map_mutex_);
+  return GetTransactionByNameLocked(name);
+}
+
+Transaction* PessimisticTransactionDB::GetTransactionByNameLocked(
+    const TransactionName& name) {
   auto it = transactions_.find(name);
   if (it == transactions_.end()) {
     return nullptr;
@@ -617,13 +766,15 @@ void PessimisticTransactionDB::SetDeadlockInfoBufferSize(uint32_t target_size) {
   lock_manager_->Resize(target_size);
 }
 
-void PessimisticTransactionDB::RegisterTransaction(Transaction* txn) {
+Status PessimisticTransactionDB::RegisterTransaction(Transaction* txn) {
   assert(txn);
   assert(txn->GetName().length() > 0);
-  assert(GetTransactionByName(txn->GetName()) == nullptr);
   assert(txn->GetState() == Transaction::STARTED);
   std::lock_guard<std::mutex> lock(name_map_mutex_);
-  transactions_[txn->GetName()] = txn;
+  if (!transactions_.insert({txn->GetName(), txn}).second) {
+    return Status::InvalidArgument("Duplicate txn name " + txn->GetName());
+  }
+  return Status::OK();
 }
 
 void PessimisticTransactionDB::UnregisterTransaction(Transaction* txn) {
@@ -634,5 +785,67 @@ void PessimisticTransactionDB::UnregisterTransaction(Transaction* txn) {
   transactions_.erase(it);
 }
 
+std::pair<Status, std::shared_ptr<const Snapshot>>
+PessimisticTransactionDB::CreateTimestampedSnapshot(TxnTimestamp ts) {
+  if (kMaxTxnTimestamp == ts) {
+    return std::make_pair(Status::InvalidArgument("invalid ts"), nullptr);
+  }
+  assert(db_impl_);
+  return db_impl_->CreateTimestampedSnapshot(kMaxSequenceNumber, ts);
+}
+
+std::shared_ptr<const Snapshot>
+PessimisticTransactionDB::GetTimestampedSnapshot(TxnTimestamp ts) const {
+  assert(db_impl_);
+  return db_impl_->GetTimestampedSnapshot(ts);
+}
+
+void PessimisticTransactionDB::ReleaseTimestampedSnapshotsOlderThan(
+    TxnTimestamp ts) {
+  assert(db_impl_);
+  db_impl_->ReleaseTimestampedSnapshotsOlderThan(ts);
+}
+
+Status PessimisticTransactionDB::GetTimestampedSnapshots(
+    TxnTimestamp ts_lb, TxnTimestamp ts_ub,
+    std::vector<std::shared_ptr<const Snapshot>>& timestamped_snapshots) const {
+  assert(db_impl_);
+  return db_impl_->GetTimestampedSnapshots(ts_lb, ts_ub, timestamped_snapshots);
+}
+
+Status SnapshotCreationCallback::operator()(SequenceNumber seq,
+                                            bool disable_memtable) {
+  assert(db_impl_);
+  assert(commit_ts_ != kMaxTxnTimestamp);
+
+  const bool two_write_queues =
+      db_impl_->immutable_db_options().two_write_queues;
+  assert(!two_write_queues || !disable_memtable);
+#ifdef NDEBUG
+  (void)two_write_queues;
+  (void)disable_memtable;
+#endif
+
+  const bool seq_per_batch = db_impl_->seq_per_batch();
+  if (!seq_per_batch) {
+    assert(db_impl_->GetLastPublishedSequence() <= seq);
+  } else {
+    assert(db_impl_->GetLastPublishedSequence() < seq);
+  }
+
+  // Create a snapshot which can also be used for write conflict checking.
+  auto ret = db_impl_->CreateTimestampedSnapshot(seq, commit_ts_);
+  snapshot_creation_status_ = ret.first;
+  snapshot_ = ret.second;
+  if (snapshot_creation_status_.ok()) {
+    assert(snapshot_);
+  } else {
+    assert(!snapshot_);
+  }
+  if (snapshot_ && snapshot_notifier_) {
+    snapshot_notifier_->SnapshotCreated(snapshot_.get());
+  }
+  return Status::OK();
+}
+
 }  // namespace ROCKSDB_NAMESPACE
-#endif  // ROCKSDB_LITE
