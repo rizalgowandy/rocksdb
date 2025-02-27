@@ -3,13 +3,55 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-#ifndef ROCKSDB_LITE
-
 #include "rocksdb/utilities/debug.h"
 
 #include "db/db_impl/db_impl.h"
+#include "rocksdb/utilities/options_type.h"
 
 namespace ROCKSDB_NAMESPACE {
+
+static std::unordered_map<std::string, ValueType> value_type_string_map = {
+    {"TypeDeletion", ValueType::kTypeDeletion},
+    {"TypeValue", ValueType::kTypeValue},
+    {"TypeMerge", ValueType::kTypeMerge},
+    {"TypeLogData", ValueType::kTypeLogData},
+    {"TypeColumnFamilyDeletion", ValueType::kTypeColumnFamilyDeletion},
+    {"TypeColumnFamilyValue", ValueType::kTypeColumnFamilyValue},
+    {"TypeColumnFamilyMerge", ValueType::kTypeColumnFamilyMerge},
+    {"TypeSingleDeletion", ValueType::kTypeSingleDeletion},
+    {"TypeColumnFamilySingleDeletion",
+     ValueType::kTypeColumnFamilySingleDeletion},
+    {"TypeBeginPrepareXID", ValueType::kTypeBeginPrepareXID},
+    {"TypeEndPrepareXID", ValueType::kTypeEndPrepareXID},
+    {"TypeCommitXID", ValueType::kTypeCommitXID},
+    {"TypeRollbackXID", ValueType::kTypeRollbackXID},
+    {"TypeNoop", ValueType::kTypeNoop},
+    {"TypeColumnFamilyRangeDeletion",
+     ValueType::kTypeColumnFamilyRangeDeletion},
+    {"TypeRangeDeletion", ValueType::kTypeRangeDeletion},
+    {"TypeColumnFamilyBlobIndex", ValueType::kTypeColumnFamilyBlobIndex},
+    {"TypeBlobIndex", ValueType::kTypeBlobIndex},
+    {"TypeBeginPersistedPrepareXID", ValueType::kTypeBeginPersistedPrepareXID},
+    {"TypeBeginUnprepareXID", ValueType::kTypeBeginUnprepareXID},
+    {"TypeDeletionWithTimestamp", ValueType::kTypeDeletionWithTimestamp},
+    {"TypeCommitXIDAndTimestamp", ValueType::kTypeCommitXIDAndTimestamp},
+    {"TypeWideColumnEntity", ValueType::kTypeWideColumnEntity},
+    {"TypeColumnFamilyWideColumnEntity",
+     ValueType::kTypeColumnFamilyWideColumnEntity},
+    {"TypeValuePreferredSeqno", ValueType::kTypeValuePreferredSeqno},
+    {"TypeColumnFamilyValuePreferredSeqno",
+     ValueType::kTypeColumnFamilyValuePreferredSeqno},
+};
+
+std::string KeyVersion::GetTypeName() const {
+  std::string type_name;
+  if (SerializeEnum<ValueType>(value_type_string_map,
+                               static_cast<ValueType>(type), &type_name)) {
+    return type_name;
+  } else {
+    return "Invalid";
+  }
+}
 
 Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
                          size_t max_num_ikeys,
@@ -38,15 +80,25 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
   DBImpl* idb = static_cast<DBImpl*>(db->GetRootDB());
   auto icmp = InternalKeyComparator(idb->GetOptions(cfh).comparator);
   ReadOptions read_options;
-  ReadRangeDelAggregator range_del_agg(&icmp,
-                                       kMaxSequenceNumber /* upper_bound */);
   Arena arena;
-  ScopedArenaIterator iter(idb->NewInternalIterator(
-      read_options, &arena, &range_del_agg, kMaxSequenceNumber, cfh));
+  ScopedArenaPtr<InternalIterator> iter(
+      idb->NewInternalIterator(read_options, &arena, kMaxSequenceNumber, cfh));
 
-  if (!begin_key.empty()) {
+  const Comparator* ucmp = icmp.user_comparator();
+  size_t ts_sz = ucmp->timestamp_size();
+
+  Slice from_slice = begin_key;
+  bool has_begin = !begin_key.empty();
+  Slice end_slice = end_key;
+  bool has_end = !end_key.empty();
+  std::string begin_key_buf, end_key_buf;
+  auto [from, end] = MaybeAddTimestampsToRange(
+      has_begin ? &from_slice : nullptr, has_end ? &end_slice : nullptr, ts_sz,
+      &begin_key_buf, &end_key_buf);
+  if (has_begin) {
+    assert(from.has_value());
     InternalKey ikey;
-    ikey.SetMinPossibleForUserKey(begin_key);
+    ikey.SetMinPossibleForUserKey(from.value());
     iter->Seek(ikey.Encode());
   } else {
     iter->SeekToFirst();
@@ -61,8 +113,8 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
       return pik_status;
     }
 
-    if (!end_key.empty() &&
-        icmp.user_comparator()->Compare(ikey.user_key, end_key) > 0) {
+    if (has_end && end.has_value() &&
+        icmp.user_comparator()->Compare(ikey.user_key, end.value()) > 0) {
       break;
     }
 
@@ -78,5 +130,3 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
 }
 
 }  // namespace ROCKSDB_NAMESPACE
-
-#endif  // ROCKSDB_LITE

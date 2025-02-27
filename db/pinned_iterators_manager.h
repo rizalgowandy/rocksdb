@@ -25,6 +25,11 @@ class PinnedIteratorsManager : public Cleanable {
     }
   }
 
+  // Move constructor and move assignment is allowed.
+  PinnedIteratorsManager(PinnedIteratorsManager&& other) noexcept = default;
+  PinnedIteratorsManager& operator=(PinnedIteratorsManager&& other) noexcept =
+      default;
+
   // Enable Iterators pinning
   void StartPinning() {
     assert(pinning_enabled == false);
@@ -73,11 +78,11 @@ class PinnedIteratorsManager : public Cleanable {
 
  private:
   static void ReleaseInternalIterator(void* ptr) {
-    delete reinterpret_cast<InternalIterator*>(ptr);
+    delete static_cast<InternalIterator*>(ptr);
   }
 
   static void ReleaseArenaInternalIterator(void* ptr) {
-    reinterpret_cast<InternalIterator*>(ptr)->~InternalIterator();
+    static_cast<InternalIterator*>(ptr)->~InternalIterator();
   }
 
   bool pinning_enabled;

@@ -3,14 +3,14 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 //
-#ifndef ROCKSDB_LITE
 #include "rocksdb/ldb_tool.h"
+
 #include "rocksdb/utilities/ldb_cmd.h"
 #include "tools/ldb_cmd_impl.h"
 
 namespace ROCKSDB_NAMESPACE {
 
-LDBOptions::LDBOptions() {}
+LDBOptions::LDBOptions() = default;
 
 void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
                                  const char* /*exec_name*/, bool to_stderr) {
@@ -28,6 +28,9 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
   ret.append("  --" + LDBCommand::ARG_SECONDARY_PATH +
              "=<secondary_path> to open DB as secondary instance. Operations "
              "not supported in secondary instance will fail.\n\n");
+  ret.append("  --" + LDBCommand::ARG_LEADER_PATH +
+             "=<leader_path> to open DB as a follower instance. Operations "
+             "not supported in follower instance will fail.\n\n");
   ret.append(
       "The following optional parameters control if keys/values are "
       "input/output as hex or as plain strings:\n");
@@ -50,7 +53,10 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
              " with 'put','get','scan','dump','query','batchput'"
              " : DB supports ttl and value is internally timestamp-suffixed\n");
   ret.append("  --" + LDBCommand::ARG_TRY_LOAD_OPTIONS +
-             " : Try to load option file from DB.\n");
+             " : Try to load option file from DB. Default to true if " +
+             LDBCommand::ARG_DB +
+             " is specified and not creating a new DB and not open as TTL DB. "
+             "Can be set to false explicitly.\n");
   ret.append("  --" + LDBCommand::ARG_DISABLE_CONSISTENCY_CHECKS +
              " : Set options.force_consistency_checks = false.\n");
   ret.append("  --" + LDBCommand::ARG_IGNORE_UNKNOWN_OPTIONS +
@@ -82,14 +88,22 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
              "=<double,e.g.:0.25>\n");
   ret.append("  --" + LDBCommand::ARG_BLOB_COMPACTION_READAHEAD_SIZE +
              "=<int,e.g.:2097152>\n");
+  ret.append("  --" + LDBCommand::ARG_READ_TIMESTAMP +
+             "=<uint64_ts, e.g.:323> : read timestamp, required if column "
+             "family enables timestamp, otherwise invalid if provided.");
 
   ret.append("\n\n");
   ret.append("Data Access Commands:\n");
   PutCommand::Help(ret);
+  PutEntityCommand::Help(ret);
   GetCommand::Help(ret);
+  GetEntityCommand::Help(ret);
+  MultiGetCommand::Help(ret);
+  MultiGetEntityCommand::Help(ret);
   BatchPutCommand::Help(ret);
   ScanCommand::Help(ret);
   DeleteCommand::Help(ret);
+  SingleDeleteCommand::Help(ret);
   DeleteRangeCommand::Help(ret);
   DBQuerierCommand::Help(ret);
   ApproxSizeCommand::Help(ret);
@@ -105,6 +119,7 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
   DBDumperCommand::Help(ret);
   DBLoaderCommand::Help(ret);
   ManifestDumpCommand::Help(ret);
+  UpdateManifestCommand::Help(ret);
   FileChecksumDumpCommand::Help(ret);
   GetPropertyCommand::Help(ret);
   ListColumnFamiliesCommand::Help(ret);
@@ -125,7 +140,7 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
 }
 
 int LDBCommandRunner::RunCommand(
-    int argc, char const* const* argv, Options options,
+    int argc, char const* const* argv, const Options& options,
     const LDBOptions& ldb_options,
     const std::vector<ColumnFamilyDescriptor>* column_families) {
   if (argc <= 2) {
@@ -175,5 +190,3 @@ void LDBTool::Run(int argc, char** argv, Options options,
   exit(error_code);
 }
 }  // namespace ROCKSDB_NAMESPACE
-
-#endif  // ROCKSDB_LITE

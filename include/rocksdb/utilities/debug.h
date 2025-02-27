@@ -5,8 +5,6 @@
 
 #pragma once
 
-#ifndef ROCKSDB_LITE
-
 #include "rocksdb/db.h"
 #include "rocksdb/types.h"
 
@@ -25,9 +23,8 @@ struct KeyVersion {
   std::string user_key;
   std::string value;
   SequenceNumber sequence;
-  // TODO(ajkr): we should provide a helper function that converts the int to a
-  // string describing the type for easier debugging.
   int type;
+  std::string GetTypeName() const;
 };
 
 // Returns listing of all versions of keys in the provided user key range.
@@ -45,5 +42,3 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
                          std::vector<KeyVersion>* key_versions);
 
 }  // namespace ROCKSDB_NAMESPACE
-
-#endif  // ROCKSDB_LITE
